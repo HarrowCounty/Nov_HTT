@@ -1,0 +1,34 @@
+project:
+  type: book
+  output-dir: docs          # Agregado: carpeta que leerá GitHub Pages
+  execute-dir: project      # Agregado: para que los capítulos lean "data/..." directo desde la raíz
+
+book:
+  title: "Nov_HTT"
+  author: "Erick Israel Zúñiga Moreno"
+  date: "23/11/2026"
+  cover-image: cover.png    # Agregado: aprovecha el cover.png que ya tienes en la carpeta
+  chapters:
+    - index.qmd
+    - capitulos/01_exploracion.qmd
+    - capitulos/02_modelado.qmd
+    - capitulos/03_resultados.qmd
+    - references.qmd
+
+bibliography: references.bib
+
+execute:
+  freeze: auto              # Agregado: guarda caché de código y solo recompila capítulos modificados
+  warning: false
+  message: false
+
+format:
+  html:
+    theme:
+      - cosmo
+      - brand
+    code-fold: true         # Agregado: botón para ocultar/mostrar código en la web
+    code-tools: true
+
+editor: visual
+

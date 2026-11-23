@@ -1,0 +1,22 @@
+# 1. Ignorar TODAS las bases de datos
+data/
+*.csv
+*.xlsx
+*.xls
+*.rds
+*.RData
+*.shp
+*.shx
+*.dbf
+*.prj
+
+# 2. Ignorar carpetas de caché e imágenes intermedias que genera Quarto/R
+/.quarto/
+/_freeze/
+*_files/
+*.Rproj.user
+.Rhistory
+
+# 3. Ignorar cualquier archivo dentro de capitulos/ EXCEPTO los .qmd
+capitulos/*
+!capitulos/*.qmd
