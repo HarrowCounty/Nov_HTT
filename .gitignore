@@ -20,3 +20,5 @@ data/
 # 3. Ignorar cualquier archivo dentro de capitulos/ EXCEPTO los .qmd
 capitulos/*
 !capitulos/*.qmd
+
+**/*.quarto_ipynb

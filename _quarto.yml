@@ -7,12 +7,10 @@ book:
   title: "Nov_HTT"
   author: "Erick Israel Zúñiga Moreno"
   date: "23/11/2026"
-  cover-image: cover.png    # Agregado: aprovecha el cover.png que ya tienes en la carpeta
+  cover-image: cover.png
   chapters:
     - index.qmd
-    - capitulos/01_exploracion.qmd
-    - capitulos/02_modelado.qmd
-    - capitulos/03_resultados.qmd
+    - capitulos/1_DatosDefensa.qmd
     - references.qmd
 
 bibliography: references.bib
