@@ -777,7 +777,7 @@ revisar_municipios("22", Datos_cocaina, Datos_Esp_Mun)
 revisar_municipios("23", Datos_cocaina, Datos_Esp_Mun)
 ```
 ```{r}
-#| label: hom-23-correccion
+#| label: hom-23-correccion1
 
 Datos_cocaina <- Datos_cocaina |>
   mutate(
