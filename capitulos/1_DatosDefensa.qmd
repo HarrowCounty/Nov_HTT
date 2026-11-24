@@ -1,3 +1,1457 @@
 ---
 title: "Datos DEFENSA"
+lang: es
+format: html
 ---
+
+Este trabajo toma la base de datos de la DEFENSA Nacional y se filtra por el campo de DROGA -\> COCAINA.
+
+La intención de este capítulo es lograr una homologación de los nombres municipales y heredar la clave estatal que aporta la base del marco Geoestadístico del INEGI del 2025.
+
+```{r}
+library(sf)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(here)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(plotly)
+library(stringi)
+```
+
+# Carga de base de datos
+
+```{r}
+#| label: Datos DEFENSA
+
+ruta_DB_DEFENSA <- here("data","raw","DEFENSA","Datos_DEFENSA.xlsx")
+
+Datos_DEFENSA <- read_xlsx(ruta_DB_DEFENSA, skip = 3, guess_max = 50000)
+
+str(Datos_DEFENSA)
+
+unique(Datos_DEFENSA$DROGA)
+
+Datos_cocaina <- Datos_DEFENSA |>  filter(DROGA=="COCAINA")
+
+print("Diferencia de registros entre la base de datos completa y filtrada por COCAINA")
+
+cat(
+  "Total de registros:", nrow(Datos_DEFENSA), "\n",
+  "Registros de cocaína:", nrow(Datos_cocaina), "\n",
+  "Registros excluidos:", nrow(Datos_DEFENSA) - nrow(Datos_cocaina), "\n",
+  "Porcentaje que representa cocaína:", round(nrow(Datos_cocaina) / nrow(Datos_DEFENSA) * 100, 2), "%\n")
+```
+
+Estados donde ha habido incautación de Cocaína
+
+```{r}
+#| label: Edo con Inc de Coca
+
+unique(Datos_cocaina$ESTADO)
+```
+
+Buscando la homologación de datos con el marco geoestadístico
+
+# Datos marco geoestadístico del INEGI
+
+```{r}
+#| label: Carga Marco INEGI
+
+ruta_datos_Estatal <- here("data","raw","Datos_Mapas","00ent.shp")
+
+Datos_Esp_Esta <- st_read(ruta_datos_Estatal)
+
+colnames(Datos_Esp_Esta)
+
+Datos_Esp_Esta <- Datos_Esp_Esta |>  mutate(NOMGEO = toupper(NOMGEO))
+unique(Datos_Esp_Esta$NOMGEO)
+
+str(Datos_Esp_Esta)
+```
+
+#Homologación Nivel ESTADO
+
+```{r}
+#| label: homologacion
+
+#Diferencia entre los nombre
+print("Nombres de estados que difieren en las bases de datos")
+setdiff(Datos_cocaina$ESTADO,Datos_Esp_Esta$NOMGEO)
+
+#homologar
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    ESTADO = case_when(
+      ESTADO == "ESTADO DE MEXICO"  ~ "MÉXICO",
+      ESTADO == "CIUDAD DE MEXICO"  ~ "CIUDAD DE MÉXICO",
+      ESTADO == "COAHUILA"          ~ "COAHUILA DE ZARAGOZA",
+      ESTADO == "MICHOACAN"         ~ "MICHOACÁN DE OCAMPO",
+      ESTADO == "VERACRUZ"          ~ "VERACRUZ DE IGNACIO DE LA LLAVE",
+      ESTADO == "NUEVO LEON"        ~ "NUEVO LEÓN",
+      ESTADO == "SAN LUIS POTOSI"   ~ "SAN LUIS POTOSÍ",
+      ESTADO == "QUERETARO"         ~ "QUERÉTARO",
+      ESTADO == "YUCATAN"           ~ "YUCATÁN",
+      TRUE                          ~ ESTADO ))
+
+#comprobación 
+print("Imprimirá cero si los todos los nombres de los estados coinciden con el nombre NOMGEO del MGI Marco Geoestadístico INEGI")
+
+setdiff(Datos_cocaina$ESTADO,Datos_Esp_Esta$NOMGEO)
+
+#Heredar la clave de la entidad de la MGI
+
+Datos_cocaina <- Datos_cocaina |>
+  left_join(
+    Datos_Esp_Esta |> st_drop_geometry() |> select(CVE_ENT, NOMGEO),
+    by = c("ESTADO" = "NOMGEO"))
+```
+
+```{r}
+#| label: Heredación de CVE
+full_join(
+  Datos_cocaina |> distinct(CVE_ENT, ESTADO),
+  Datos_Esp_Esta |> st_drop_geometry() |> distinct(CVE_ENT, NOMGEO),
+  by = "CVE_ENT") |>
+  arrange(CVE_ENT) |>
+  print(n = 32)
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(MUNICIPIO_INEGI = MUNICIPIO)
+
+nrow(Datos_cocaina)
+```
+
+#Datos marcogeoestadístico Municipal y localidades
+
+```{r}
+#| label: Base MGI municipal y localidades 
+
+ruta_datos_Municipales <- here("data","raw","Datos_Mapas","00mun.shp")
+
+Datos_Esp_Mun <- st_read(ruta_datos_Municipales) |>
+  rename(MUNICIPIO = NOMGEO) |>
+  mutate(
+    MUNICIPIO = toupper(MUNICIPIO),
+    MUNICIPIO = stri_trans_general(MUNICIPIO, "Latin-ASCII"))
+
+str(Datos_Esp_Mun)
+
+
+ruta_datos_Localidades <- here("data", "raw", "Datos_Mapas", "00l.shp")
+
+Datos_Esp_Loc <- st_read(ruta_datos_Localidades)
+
+str(Datos_Esp_Loc)
+```
+
+# Al hacer el analisis para homologar los nombres de los municipios se detectó la siguiente situación:
+
+# Estado CVE_ENT: 03 - BAJA CALIFORNIA SUR
+
+Hay 1 municipio(s) en cocaina que NO estan en el INEGI.
+
+Lista de municipios en Datos_cocaina: \[1\] "COMONDU" "GUERRERO NEGRO" "LA PAZ"\
+\[4\] "LORETO" "LOS CABOS" "MULEGE"
+
+Lista oficial completa del INEGI (Catalogo del estado): \[1\] "COMONDU" "LA PAZ" "LORETO" "LOS CABOS" "MULEGE"
+
+Municipios en cocaina que NO estan en el INEGI: \[1\] "GUERRERO NEGRO"
+
+"GUERRERO NEGRO" es una localidad urbana que se adjudica a el municipio de MUELEGUE para justificar estos casos se usará MGI en 001 que contiene el nombre de las localidades
+
+# Homologación nivel municipal.
+
+Me voy a ir estado por estado para ver cada caso en los municipios el orden en que se hará es el siguiente.
+
+```{r}
+#| label: orden homologacion
+cat(sort(unique(Datos_DEFENSA$ESTADO)), sep = "\n")
+```
+
+```{r}
+#| label: Fun para homologación 
+revisar_municipios <- function(cve, Base1, Base2) {
+  
+  mun_cocaina <- Base1 |> filter(CVE_ENT == cve) |> pull(MUNICIPIO_INEGI) |> unique() |> sort()
+  mun_inegi   <- Base2 |> filter(CVE_ENT == cve) |> pull(MUNICIPIO) |> unique() |> sort()
+  
+  sin_empatar <- setdiff(mun_cocaina, mun_inegi)
+  
+  # Busca el nombre del estado en el catalogo del INEGI
+  nombre_estado <- Datos_Esp_Esta |> 
+    st_drop_geometry() |> 
+    filter(CVE_ENT == cve) |> 
+    pull(NOMGEO)
+  
+  cat("============================\n")
+  cat("Estado CVE_ENT:", cve, "-", nombre_estado, "\n")
+  cat("============================\n\n")
+  
+  if (length(sin_empatar) == 0) {
+    cat("Todos los municipios empataron.\n")
+    cat("Municipios en cocaina:", length(mun_cocaina), "\n")
+    cat("Municipios en INEGI:  ", length(mun_inegi), "\n")
+  } else {
+    cat("Hay", length(sin_empatar), "municipio(s) en cocaina que NO estan en el INEGI.\n\n")
+    
+    cat("Lista de municipios en Datos_cocaina:\n")
+    print(mun_cocaina)
+    
+    cat("\nLista oficial completa del INEGI (Catalogo del estado):\n")
+    print(mun_inegi)
+    
+    cat("\nMunicipios en cocaina que NO estan en el INEGI:\n")
+    print(sin_empatar)
+  }
+}
+
+
+```
+
+```{r}
+#| label: fun-localidades
+
+normalizar <- function(x) {
+  x |>
+    stri_trans_general("Latin-ASCII") |>   # quita acentos y ñ
+    toupper() |>                           # mayúsculas
+    str_replace_all("[^A-Z0-9 ]", " ") |>  # lo que no sea letra/número/espacio -> espacio
+    str_squish()                           # colapsa espacios repetidos
+}
+
+buscar_localidades <- function(cve, nombre, base_cocaina, base_loc_inegi, base_mun_inegi,
+                               ignorar = c("DE", "DEL", "LA", "LAS", "LOS", "EL", "Y",
+                                           "SAN", "SANTA", "SANTO")) {
+
+  # BLOQUE 1: avisa (sin detener) si el nombre no está en MUNICIPIO
+  # (el original de DEFENSA, que nunca se modifica) de la base de cocaína para ese estado
+  if (!nombre %in% base_cocaina$MUNICIPIO[base_cocaina$CVE_ENT == cve]) {
+    warning("'", nombre, "' no aparece en MUNICIPIO de la base de cocaína para CVE_ENT ", cve)
+  }
+
+  # BLOQUE 2: preparar la búsqueda
+  nombre_norm <- normalizar(nombre)
+  palabras <- str_split(nombre_norm, " ")[[1]]
+  palabras <- palabras[!palabras %in% ignorar & nchar(palabras) > 1]
+  if (length(palabras) == 0) stop("No quedan palabras útiles para buscar en '", nombre, "'")
+  patron <- paste0("\\b(", paste(palabras, collapse = "|"), ")\\b")
+
+  # BLOQUES 3, 4 y 5: filtrar estado, clasificar coincidencias y ordenar
+  resultado <- base_loc_inegi |>
+    st_drop_geometry() |>
+    filter(CVE_ENT == cve) |>
+    mutate(
+      LOC_NORM = normalizar(NOMGEO),
+      tipo = case_when(
+        str_detect(LOC_NORM, fixed(nombre_norm)) ~ "frase completa",
+        str_detect(LOC_NORM, patron)             ~ "alguna palabra",
+        TRUE ~ NA_character_)
+    ) |>
+    filter(!is.na(tipo)) |>
+    arrange(factor(tipo, levels = c("frase completa", "alguna palabra")), CVE_MUN, NOMGEO) |>
+    select(tipo, CVE_MUN, CVE_LOC, NOMGEO)
+
+  # BLOQUE 6: imprimir con el mismo formato que revisar_municipios()
+  nombre_estado <- Datos_Esp_Esta |>
+    st_drop_geometry() |>
+    filter(CVE_ENT == cve) |>
+    pull(NOMGEO)
+
+  cat("============================\n")
+  cat("Estado CVE_ENT:", cve, "-", nombre_estado, "\n")
+  cat("============================\n\n")
+  cat("Nombre buscado:", nombre, "\n")
+  cat("Palabras usadas:", paste(palabras, collapse = ", "), "\n\n")
+
+  if (nrow(resultado) == 0) {
+    cat("No se encontraron localidades con coincidencia en el catalogo de localidades del INEGI.\n")
+  } else {
+    cat("Localidades encontradas:", nrow(resultado), "\n")
+    cat("  - frase completa:", sum(resultado$tipo == "frase completa"), "\n")
+    cat("  - alguna palabra:", sum(resultado$tipo == "alguna palabra"), "\n\n")
+    print(resultado)
+
+    # Nombre(s) de municipio: se buscan por CVE_ENT + CVE_MUN en el catálogo municipal
+    municipios_encontrados <- base_mun_inegi |>
+      st_drop_geometry() |>
+      filter(CVE_ENT == cve, CVE_MUN %in% unique(resultado$CVE_MUN)) |>
+      distinct(CVE_MUN, MUNICIPIO) |>
+      arrange(CVE_MUN)
+
+    cat("\nMunicipio(s) segun el catalogo municipal del INEGI:\n")
+    print(municipios_encontrados)
+  }
+
+  invisible(resultado)   # devuelve la tabla sin imprimirla otra vez
+}
+```
+
+## Homologación Municipal por estado
+
+```{r}
+#| label: hom 01
+
+
+revisar_municipios("01", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom 02
+revisar_municipios("02", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom 02,correcion
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "02" & MUNICIPIO == "SAN FELIPE, B.C."  ~ "SAN FELIPE",
+      CVE_ENT == "02" & MUNICIPIO == "SAN QUINTIN, B.C." ~ "SAN QUINTIN",
+      TRUE ~ MUNICIPIO_INEGI))
+
+```
+
+```{r}
+#| label: hom 02,ver
+revisar_municipios("02", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom 03
+revisar_municipios("03", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: Localidades 03
+
+buscar_localidades("03", "GUERRERO NEGRO", Datos_cocaina, Datos_Esp_Loc,Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-03-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "03" & MUNICIPIO == "GUERRERO NEGRO" ~ "MULEGE",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("03", Datos_cocaina, Datos_Esp_Mun)
+
+#verificación de control
+Datos_cocaina |>
+  filter(CVE_ENT == "03", MUNICIPIO == "GUERRERO NEGRO") |>
+  distinct(MUNICIPIO, MUNICIPIO_INEGI)
+```
+
+```{r}
+#| label: hom-04
+revisar_municipios("04", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-05
+revisar_municipios("05", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-05-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "05" & MUNICIPIO == "CUATROCIENEGAS" ~ "CUATRO CIENEGAS",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("05", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-05-gomez-palacio localidades-05-lerdo
+
+buscar_localidades("05", "GOMEZ PALACIO", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+
+buscar_localidades("05", "LERDO", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-06
+revisar_municipios("06", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-07
+revisar_municipios("07", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-07-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "07" & MUNICIPIO == "CINTALAPA"    ~ "CINTALAPA DE FIGUEROA",
+      CVE_ENT == "07" & MUNICIPIO == "VILLA FLORES" ~ "VILLAFLORES",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("07", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-08
+revisar_municipios("08", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-08-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "08" & MUNICIPIO == "CD. JIMENEZ" ~ "JIMENEZ",
+      CVE_ENT == "08" & MUNICIPIO == "VILLA LOPEZ" ~ "LOPEZ",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("08", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-08-restantes
+
+buscar_localidades("08", "ATASCADEROS",         Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("08", "BASASEACHI",          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("08", "SANALONA",            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("08", "SAN JOSE DE GRACIA",  Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("08", "S. J. NEPOMUCENO",    Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-08-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "08" & MUNICIPIO == "ATASCADEROS"        ~ "GUADALUPE Y CALVO",
+      CVE_ENT == "08" & MUNICIPIO == "BASASEACHI"         ~ "OCAMPO",
+      CVE_ENT == "08" & MUNICIPIO == "SAN JOSE DE GRACIA" ~ "VALLE DEL ROSARIO",
+      CVE_ENT == "08" & MUNICIPIO == "S. J. NEPOMUCENO"   ~ "GUADALUPE Y CALVO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("08", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-09
+revisar_municipios("09", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-09-xalapa
+buscar_localidades("09", "XALAPA", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-10
+revisar_municipios("10", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-10-alamos
+buscar_localidades("10", "ALAMOS", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-10-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "10" & MUNICIPIO == "ALAMOS" ~ "GUANACEVI",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("10", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-11
+revisar_municipios("11", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-11-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "11" & MUNICIPIO == "DOLORES HIDALGO"   ~ "DOLORES HIDALGO CUNA DE LA INDEPENDENCIA NACIONAL",
+      CVE_ENT == "11" & MUNICIPIO == "SAN JOSE ITURBIDE" ~ "SAN JOSE DE ITURBIDE",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("11", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-12
+revisar_municipios("12", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-12-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "12" & MUNICIPIO == "APAXTLA"                       ~ "APAXTLA DE CASTREJON",
+      CVE_ENT == "12" & MUNICIPIO == "HELIODORO CASTILLO"            ~ "GENERAL HELIODORO CASTILLO",
+      CVE_ENT == "12" & MUNICIPIO == "IGUALA"                        ~ "IGUALA DE LA INDEPENDENCIA",
+      CVE_ENT == "12" & MUNICIPIO == "LA UNION DE ISIDORO M. DE OCA" ~ "LA UNION DE ISIDORO MONTES DE OCA",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("12", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-12
+
+buscar_localidades("12", "CIUDAD ALTAMIRANO", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("12", "EL TICUI",          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("12", "JOSE AZUETA",       Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("12", "SURUTATO",          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-12-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "12" & MUNICIPIO == "CIUDAD ALTAMIRANO" ~ "PUNGARABATO",
+      CVE_ENT == "12" & MUNICIPIO == "EL TICUI"          ~ "ATOYAC DE ALVAREZ",
+      CVE_ENT == "12" & MUNICIPIO == "JOSE AZUETA"       ~ "ACAPULCO DE JUAREZ",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("12", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-13
+revisar_municipios("13", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-13-basaseachi
+
+buscar_localidades("13", "BASASEACHI", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+
+```
+
+```{r}
+#| label: hom-14
+revisar_municipios("14", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-14-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "14" & MUNICIPIO == "AMATITLAN"              ~ "AMATITAN",
+      CVE_ENT == "14" & MUNICIPIO == "CAÃ‘ADAS DE OBREGON"    ~ "CANADAS DE OBREGON",
+      CVE_ENT == "14" & MUNICIPIO == "SAN MARTIN DE BOLAÃ‘OS" ~ "SAN MARTIN DE BOLANOS",
+      CVE_ENT == "14" & MUNICIPIO == "SAN MARTIN DE HIDALGO"  ~ "SAN MARTIN HIDALGO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("14", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-14
+
+buscar_localidades("14", "CIUDAD GUZMAN", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("14", "GUAMUCHIL",     Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-14-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "14" & MUNICIPIO == "CIUDAD GUZMAN" ~ "ZAPOTLAN EL GRANDE",
+      CVE_ENT == "14" & MUNICIPIO == "GUAMUCHIL"     ~ "LA BARCA",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("14", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-15
+revisar_municipios("15", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-15-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "15" & MUNICIPIO == "ACAMBAY"  ~ "ACAMBAY DE RUIZ CASTANEDA",
+      CVE_ENT == "15" & MUNICIPIO == "ECATEPEC" ~ "ECATEPEC DE MORELOS",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("15", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-16
+revisar_municipios("16", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-16-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "16" & MUNICIPIO == "ARIO DE ROSALES" ~ "ARIO",
+      CVE_ENT == "16" & MUNICIPIO == "BRISEÃ‘AS"       ~ "BRISENAS",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("16", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-17
+revisar_municipios("17", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-17-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "17" & MUNICIPIO == "JONACATEPEC" ~ "JONACATEPEC DE LEANDRO VALLE",
+      CVE_ENT == "17" & MUNICIPIO == "TLALTIZAPAN" ~ "TLALTIZAPAN DE ZAPATA",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("17", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-18
+revisar_municipios("18", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-19
+revisar_municipios("19", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-19-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "19" & MUNICIPIO == "GENERAL TREVIÃ‘O" ~ "GENERAL TREVINO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("19", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-19
+
+buscar_localidades("19", "ACAPULCO DE JUAREZ",                  Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "ALAMOS",                              Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "ALTAMIRA",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "ALTOTONGA",                           Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "CENTRO (Villahermosa)",               Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "CHIAPA DE CORZO",                     Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "CINTALAPA",                           Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "CUERNAVACA",                          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "CULIACAN",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "ENSENADA",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "FRANCISCO I. MADERO",                 Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "GOMEZ PALACIO",                       Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "GUAYMAS",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "GUERRERO",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "HALACHO",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "HEROICA CIUDAD DE HUAJUAPAN DE LEON", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "HUETAMO",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "JIUTEPEC",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "LA HUACANA",                          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "LA UNION DE ISIDORO M. DE OCA",       Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "LEONARDO BRAVO",                      Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "MATAMOROS",                           Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "MEXICALI",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "MIGUEL ALEMAN",                       Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "MOCORITO",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "MORELIA",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "NAVOLATO",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "PERIBAN",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "PUEBLO NUEVO",                        Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "REYNOSA",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "RIO BRAVO",                           Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SAN CARLOS YAUTEPEC",                 Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SAN IGNACIO",                         Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SAN JOSE DE GRACIA",                  Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SAN LUIS AMATLAN",                    Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SAN PEDRO LAGUNILLAS",                Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SAN PEDRO POCHUTLA",                  Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SANALONA",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SANTA MARIA HUATULCO",                Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SANTA MARIA ZOQUITLIN",               Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SANTIAGO PAPASQUIARO",                Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SARIC",                               Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SOMBRERETE",                          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "SUCHIAPA",                            Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "TECATE",                              Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "TEJUPILCO",                           Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "TENANCINGO",                          Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "TIJUANA",                             Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "TLALIXTAQUILLA DE MALDONADO",         Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "TUXTLA GUTIERREZ",                    Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "VILLA DE REYES",                      Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+buscar_localidades("19", "ZINAPECUARO",                         Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-20
+revisar_municipios("20", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-20-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "20" & MUNICIPIO == "JUCHITAN DE ZARAGOZA"                 ~ "HEROICA CIUDAD DE JUCHITAN DE ZARAGOZA",
+      CVE_ENT == "20" & MUNICIPIO == "MATIAS ROMERO"                        ~ "MATIAS ROMERO AVENDANO",
+      CVE_ENT == "20" & MUNICIPIO == "SAN BLAS ATEMPA"                      ~ "HEROICA VILLA DE SAN BLAS ATEMPA",
+      CVE_ENT == "20" & MUNICIPIO == "SAN DIONISIO OCOLTEPEC"               ~ "SAN DIONISIO OCOTEPEC",
+      CVE_ENT == "20" & MUNICIPIO == "SAN PEDRO TOTOLAPA"                   ~ "SAN PEDRO TOTOLAPAM",
+      CVE_ENT == "20" & MUNICIPIO == "SANTA MARIA PEÃ‘OLES"                 ~ "SANTA MARIA PENOLES",
+      CVE_ENT == "20" & MUNICIPIO == "VILLA DE TUTUTEPEC DE MELCHOR OCAMPO" ~ "VILLA DE TUTUTEPEC",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("20", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-20
+
+buscar_localidades("20", "AGUASCALIENTES", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-20-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "20" & MUNICIPIO == "AGUASCALIENTES" ~ "SANTO DOMINGO TEHUANTEPEC",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("20", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-21
+revisar_municipios("21", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-22
+revisar_municipios("22", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-23
+revisar_municipios("23", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-23-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "23" & MUNICIPIO == "SOLIDARIDAD" ~ "PLAYA DEL CARMEN",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("23", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-23
+
+buscar_localidades("23", "CHETUMAL", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-23-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "23" & MUNICIPIO == "CHETUMAL"    ~ "OTHON P. BLANCO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("23", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-24
+revisar_municipios("24", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-24-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "24" & MUNICIPIO == "AHUALULCO"   ~ "AHUALULCO DEL SONIDO 13",
+      CVE_ENT == "24" & MUNICIPIO == "TIERRANUEVA" ~ "TIERRA NUEVA",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("24", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-25
+revisar_municipios("25", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: localidades-25
+
+buscar_localidades("25", "GUAMUCHIL", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-25-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "25" & MUNICIPIO == "GUAMUCHIL" ~ "SALVADOR ALVARADO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("25", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-26
+revisar_municipios("26", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-26-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "26" & MUNICIPIO == "PUERTO PEÃ‘ASCO" ~ "PUERTO PENASCO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("26", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-26
+
+buscar_localidades("26", "SONOYTA", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-26-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "26" & MUNICIPIO == "SONOYTA" ~ "GENERAL PLUTARCO ELIAS CALLES",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("26", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-27
+revisar_municipios("27", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-27-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "27" & MUNICIPIO == "CENTRO (Villahermosa)" ~ "CENTRO",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("27", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-27
+
+buscar_localidades("27", "ARTEAGA", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-28
+revisar_municipios("28", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-29
+revisar_municipios("29", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-29-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "29" & MUNICIPIO == "ALTZAYANCA" ~ "ATLTZAYANCA",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("29", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-30
+revisar_municipios("30", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-30-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "30" & MUNICIPIO == "COSAMALOAPAN"            ~ "COSAMALOAPAN DE CARPIO",
+      CVE_ENT == "30" & MUNICIPIO == "HIDALGOTITLÃ\u0081N"     ~ "HIDALGOTITLAN",
+      CVE_ENT == "30" & MUNICIPIO == "OZULUAMA DE MASCAREÃ‘AS" ~ "OZULUAMA DE MASCARENAS",
+      CVE_ENT == "30" & MUNICIPIO == "TEMAPACHE"               ~ "ALAMO TEMAPACHE",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("30", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: localidades-30
+
+buscar_localidades("30", "CHINANTLA", Datos_cocaina, Datos_Esp_Loc, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-30-correccion-localidades
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "30" & MUNICIPIO == "CHINANTLA" ~ "SANTIAGO SOCHIAPAN",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("30", Datos_cocaina, Datos_Esp_Mun)
+```
+
+
+```{r}
+#| label: hom-31
+revisar_municipios("31", Datos_cocaina, Datos_Esp_Mun)
+```
+
+```{r}
+#| label: hom-32
+revisar_municipios("32", Datos_cocaina, Datos_Esp_Mun)
+```
+```{r}
+#| label: hom-32-correccion
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "32" & MUNICIPIO == "CAÃ‘ITAS DE FELIPE PESCADOR" ~ "CANITAS DE FELIPE PESCADOR",
+      TRUE ~ MUNICIPIO_INEGI))
+
+revisar_municipios("32", Datos_cocaina, Datos_Esp_Mun)
+```
+
+
+# Registros erróneos
+
+```{r}
+#| label: fun-mostrar-registros
+#| echo: false
+
+# Imprime todos los campos de los registros de Datos_cocaina para un estado y
+# un municipio, usando el nombre original de DEFENSA (MUNICIPIO), que nunca se modifica.
+mostrar_registros <- function(cve, municipio) {
+  reg <- Datos_cocaina |>
+    filter(CVE_ENT == cve, MUNICIPIO == municipio) |>
+    arrange(AÑO, MES)
+
+  if (nrow(reg) == 0) {
+    cat("No hay registros para", municipio, "en CVE_ENT", cve, "\n")
+  } else {
+    knitr::kable(reg, caption = paste0(nrow(reg), " registro(s) de ", municipio))
+  }
+}
+```
+
+En esta sección se reportan los registros de `Datos_cocaina` que no pudieron vincularse con el Marco Geoestadístico del INEGI (MGI 2025). Un registro se considera erróneo cuando su nombre de municipio no coincide con ningún municipio del catálogo municipal (`00mun`) ni con el nombre de alguna localidad del catálogo de localidades urbanas y rurales amanzanadas (`00l`) del mismo estado.
+
+Los registros se muestran completos, tal como vienen de DEFENSA. Nota: `00l` no incluye las localidades rurales puntuales (`00lpr`), por lo que "no encontrado" significa que no aparece en `00l`, no que la localidad no exista.
+
+## Estado: COAHUILA DE ZARAGOZA (CVE_ENT 05)
+
+**Municipio registrado en DEFENSA:** GOMEZ PALACIO
+
+```{r}
+#| label: registros-05-gomez-palacio
+#| echo: false
+mostrar_registros("05", "GOMEZ PALACIO")
+```
+
+No se encontraron coincidencias ni de nombre municipal ni de localidades.
+
+\[Explicación del caso.\]
+
+**Municipio registrado en DEFENSA:** LERDO
+
+```{r}
+#| label: registros-05-lerdo
+#| echo: false
+mostrar_registros("05", "LERDO")
+```
+
+No se encontraron coincidencias ni de nombre municipal ni de localidades.
+
+## Estado: CHIHUAHUA (CVE_ENT 08)
+
+**Municipio registrado en DEFENSA:** SANALONA
+
+```{r}
+#| label: registros-08-sanalona
+#| echo: false
+mostrar_registros("08", "SANALONA")
+```
+
+No se encontraron coincidencias ni de nombre municipal ni de localidades dentro de Chihuahua. El nombre no existe en el catálogo municipal del estado y la búsqueda en `00l` no arrojó ninguna localidad, ni por frase completa ni por palabra.
+
+**Nota sobre el error de captura:** el registro combina un estado (Chihuahua) y un municipio (Sanalona) que no son compatibles entre sí. Con la información disponible no es posible determinar cuál de los dos campos contiene el error: pudo capturarse mal el estado o pudo capturarse mal el municipio. Por esta razón el registro no se reasigna a ningún otro estado ni municipio, y se excluye de la base homologada para no atribuir incautaciones a una ubicación no verificada.
+
+## Estado: CIUDAD DE MÉXICO (CVE_ENT 09)
+
+**Municipio registrado en DEFENSA:** XALAPA
+
+```{r}
+#| label: registros-09-xalapa
+#| echo: false
+mostrar_registros("09", "XALAPA")
+```
+
+No se encontraron coincidencias ni de nombre municipal ni de localidades dentro de Ciudad de México. El nombre no existe entre las 16 alcaldías del catálogo municipal y la búsqueda en `00l` no arrojó ninguna localidad, ni por frase completa ni por palabra.
+
+**Nota sobre el error de captura:** el registro combina un estado (Ciudad de México) y un municipio (Xalapa) que no son compatibles entre sí. Con la información disponible no es posible determinar cuál de los dos campos contiene el error: pudo capturarse mal el estado o pudo capturarse mal el municipio. Por esta razón el registro no se reasigna a ningún otro estado ni municipio, y se excluye de la base homologada para no atribuir incautaciones a una ubicación no verificada.
+
+## Estado: GUERRERO (CVE_ENT 12)
+
+**Municipio registrado en DEFENSA:** SURUTATO
+
+```{r}
+#| label: registros-12-surutato
+#| echo: false
+mostrar_registros("12", "SURUTATO")
+```
+
+No se encontraron coincidencias ni de nombre municipal ni de localidades dentro de Guerrero. El nombre no existe en el catálogo municipal del estado y la búsqueda en `00l` no arrojó ninguna localidad, ni por frase completa ni por palabra.
+
+**Nota sobre el error de captura:** el registro combina un estado (Guerrero) y un municipio (Surutato) que no son compatibles entre sí. Con la información disponible no es posible determinar cuál de los dos campos contiene el error: pudo capturarse mal el estado o pudo capturarse mal el municipio. Por esta razón el registro no se reasigna a ningún otro estado ni municipio, y se excluye de la base homologada para no atribuir incautaciones a una ubicación no verificada.
+
+## Estado: HIDALGO (CVE_ENT 13)
+
+**Municipio registrado en DEFENSA:** BASASEACHI
+
+```{r}
+#| label: registros-13-basaseachi
+#| echo: false
+mostrar_registros("13", "BASASEACHI")
+```
+
+No se encontraron coincidencias ni de nombre municipal ni de localidades dentro de Hidalgo. El nombre no existe en el catálogo municipal del estado y la búsqueda en `00l` no arrojó ninguna localidad, ni por frase completa ni por palabra.
+
+**Nota sobre el error de captura:** el registro combina un estado (Hidalgo) y un municipio (Basaseachi) que no son compatibles entre sí. Con la información disponible no es posible determinar cuál de los dos campos contiene el error: pudo capturarse mal el estado o pudo capturarse mal el municipio. Por esta razón el registro no se reasigna a ningún otro estado ni municipio, y se excluye de la base homologada para no atribuir incautaciones a una ubicación no verificada.
+
+
+## Estado: TABASCO (CVE_ENT 27)
+
+En Tabasco se detectó 1 denominación en `MUNICIPIO` que no pertenece al catálogo municipal de la entidad (`ARTEAGA`), sin coincidencia en el catálogo de localidades (`00l`) del estado:
+
+```{r}
+#| label: registros-27-incompatibles
+#| echo: false
+
+mostrar_registros("27", "ARTEAGA")
+```
+
+**Nota sobre el error de captura:** el registro combina el estado de Tabasco con una denominación municipal que pertenece a otras entidades federativas (como Coahuila o Michoacán). Con la información disponible no es posible determinar cuál de los dos campos contiene el error: pudo haberse capturado erróneamente la entidad (`CVE_ENT = 27`) o el municipio. Por esta razón el registro no se reasigna a ningún otro estado ni municipio, y se excluye de la base homologada para no atribuir incautaciones a una ubicación no verificada.
+
+
+
+
+
+
+# Asignaciones por inferencia
+
+En esta sección se documentan los registros de `Datos_cocaina` cuyo valor en `MUNICIPIO` no correspondía al nombre oficial de un municipio en `00mun`, pero pudo vincularse a un municipio del mismo estado mediante el catálogo de localidades (`00l`) del MGI 2025. Los casos que solo requirieron ajustes ortográficos, de puntuación o de nombre oficial abreviado (como `CUATROCIENEGAS` o `IGUALA`) no se incluyen aquí.
+
+Cada asignación se clasifica según la solidez de la evidencia en `00l`:
+
+- **Evidencia fuerte:** coincidencia de *frase completa* con el nombre principal de una localidad en `00l` dentro del mismo estado.
+- **Evidencia media:** coincidencia de *frase completa* únicamente como nombre secundario o apodo entre paréntesis en `00l`.
+- **Evidencia baja:** coincidencia parcial por palabra/abreviatura en `00l`, o coincidencia con posible ambigüedad frente a denominaciones históricas de otros municipios.
+
+## Estado: BAJA CALIFORNIA SUR (CVE_ENT 03)
+
+**Municipio registrado en DEFENSA:** `GUERRERO NEGRO` $\rightarrow$ **Asignado a:** `MULEGE` (`CVE_MUN 002`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-03-guerrero-negro
+#| echo: false
+mostrar_registros("03", "GUERRERO NEGRO")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia de *frase completa* para la localidad urbana `Guerrero Negro` (`CVE_LOC 0066`), ubicada en el municipio de `MULEGE` (`CVE_MUN 002`).
+
+## Estado: CHIHUAHUA (CVE_ENT 08)
+
+**Municipio registrado en DEFENSA:** `ATASCADEROS` $\rightarrow$ **Asignado a:** `GUADALUPE Y CALVO` (`CVE_MUN 029`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-08-atascaderos
+#| echo: false
+mostrar_registros("08", "ATASCADEROS")
+```
+
+**Justificación:** La búsqueda en `00l` arroja dos coincidencias de *frase completa* (`Atascaderos`, `CVE_LOC 0014`, y `El Bajío Largo de Atascaderos`, `CVE_LOC 0541`), ambas pertenecientes al municipio de `GUADALUPE Y CALVO` (`CVE_MUN 029`).
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `BASASEACHI` $\rightarrow$ **Asignado a:** `OCAMPO` (`CVE_MUN 051`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-08-basaseachi
+#| echo: false
+mostrar_registros("08", "BASASEACHI")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia de *frase completa* para `Basaseachi` (`CVE_LOC 0010`), ubicada en el municipio de `OCAMPO` (`CVE_MUN 051`).
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `SAN JOSE DE GRACIA` $\rightarrow$ **Asignado a:** `VALLE DEL ROSARIO` (`CVE_MUN 056`) — **Nivel de evidencia:** Media.
+
+```{r}
+#| label: inf-08-san-jose-de-gracia
+#| echo: false
+mostrar_registros("08", "SAN JOSE DE GRACIA")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una única coincidencia de *frase completa* en `Llano de los Prieto (San José de Gracia)` (`CVE_LOC 0039`), en `VALLE DEL ROSARIO` (`CVE_MUN 056`). Se clasifica como evidencia media porque el nombre aparece únicamente como denominación secundaria entre paréntesis.
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `S. J. NEPOMUCENO` $\rightarrow$ **Asignado a:** `GUADALUPE Y CALVO` (`CVE_MUN 029`) — **Nivel de evidencia:** Baja.
+
+```{r}
+#| label: inf-08-sj-nepomuceno
+#| echo: false
+mostrar_registros("08", "S. J. NEPOMUCENO")
+```
+
+**Justificación:** No hay coincidencia de frase completa debido a la abreviatura `S. J.`; la búsqueda por palabra (`NEPOMUCENO`) identifica únicamente la localidad `San Juan Nepomuceno` (`CVE_LOC 0207`) en `GUADALUPE Y CALVO` (`CVE_MUN 029`).
+
+## Estado: DURANGO (CVE_ENT 10)
+
+**Municipio registrado en DEFENSA:** `ALAMOS` $\rightarrow$ **Asignado a:** `GUANACEVI` (`CVE_MUN 009`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-10-alamos
+#| echo: false
+mostrar_registros("10", "ALAMOS")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia de *frase completa* para `Los Álamos` (`CVE_LOC 0006`), ubicada en el municipio de `GUANACEVI` (`CVE_MUN 009`).
+
+## Estado: GUERRERO (CVE_ENT 12)
+
+**Municipio registrado en DEFENSA:** `CIUDAD ALTAMIRANO` $\rightarrow$ **Asignado a:** `PUNGARABATO` (`CVE_MUN 050`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-12-ciudad-altamirano
+#| echo: false
+mostrar_registros("12", "CIUDAD ALTAMIRANO")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia de *frase completa* para `Ciudad Altamirano` (`CVE_LOC 0001`), cabecera del municipio de `PUNGARABATO` (`CVE_MUN 050`).
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `EL TICUI` $\rightarrow$ **Asignado a:** `ATOYAC DE ALVAREZ` (`CVE_MUN 011`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-12-el-ticui
+#| echo: false
+mostrar_registros("12", "EL TICUI")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia de *frase completa* para `El Ticui` (`CVE_LOC 0071`), ubicada en el municipio de `ATOYAC DE ALVAREZ` (`CVE_MUN 011`).
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `JOSE AZUETA` $\rightarrow$ **Asignado a:** `ACAPULCO DE JUAREZ` (`CVE_MUN 001`) — **Nivel de evidencia:** Baja.
+
+```{r}
+#| label: inf-12-jose-azueta
+#| echo: false
+mostrar_registros("12", "JOSE AZUETA")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia de *frase completa* en `Teniente José Azueta (Río Papagayo)` (`CVE_LOC 0162`), en `ACAPULCO DE JUAREZ` (`CVE_MUN 001`). Se clasifica como evidencia baja porque *José Azueta* también fue la denominación oficial del actual municipio de `ZIHUATANEJO DE AZUETA` (`CVE_MUN 038`), lo que introduce ambigüedad respecto al origen real de la captura.
+
+## Estado: JALISCO (CVE_ENT 14)
+
+**Municipio registrado en DEFENSA:** `CIUDAD GUZMAN` $\rightarrow$ **Asignado a:** `ZAPOTLAN EL GRANDE` (`CVE_MUN 023`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-14-ciudad-guzman
+#| echo: false
+mostrar_registros("14", "CIUDAD GUZMAN")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia exacta de *frase completa* para la localidad urbana `Ciudad Guzmán` (`CVE_LOC 0001`), cabecera del municipio de `ZAPOTLAN EL GRANDE` (`CVE_MUN 023`).
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `GUAMUCHIL` $\rightarrow$ **Asignado a:** `LA BARCA` (`CVE_MUN 018`) — **Nivel de evidencia:** Baja.
+
+```{r}
+#| label: inf-14-guamuchil
+#| echo: false
+mostrar_registros("14", "GUAMUCHIL")
+```
+
+**Justificación:** La búsqueda en `00l` dentro de Jalisco detecta únicamente la localidad `La Puerta de Guamúchil` (`CVE_LOC 0029`) en `LA BARCA` (`CVE_MUN 018`). Se clasifica como evidencia baja porque el término coincide solo como parte de un nombre compuesto y no como localidad independiente, además de existir ambigüedad con Guamúchil (cabecera de Salvador Alvarado, Sinaloa).
+
+## Estado: NUEVO LEÓN (CVE_ENT 19)
+
+Nuevo León constituye un **caso atípico** dentro de la base de datos: mientras que el Marco Geoestadístico (MGI) registra únicamente **51 municipios oficiales** en la entidad, en `Datos_cocaina` aparecen **93 denominaciones distintas** en el campo `MUNICIPIO`. De las 53 denominaciones que inicialmente no empataron con el catálogo del INEGI, **solo 1 coincidió tras corregir la codificación** (`GENERAL TREVIÃ‘O` $\rightarrow$ `GENERAL TREVINO`), mientras que **52 denominaciones no pertenecen al catálogo municipal de Nuevo León** (entre ellas `ACAPULCO DE JUAREZ`, `CULIACAN`, `TIJUANA`, `MORELIA`, `TUXTLA GUTIERREZ`, `REYNOSA`, `GOMEZ PALACIO` y `CENTRO (Villahermosa)`):
+
+```{r}
+#| label: registros-19-incompatibles
+#| echo: false
+
+mostrar_registros("19", "ACAPULCO DE JUAREZ")
+mostrar_registros("19", "ALAMOS")
+mostrar_registros("19", "ALTAMIRA")
+mostrar_registros("19", "ALTOTONGA")
+mostrar_registros("19", "CENTRO (Villahermosa)")
+mostrar_registros("19", "CHIAPA DE CORZO")
+mostrar_registros("19", "CINTALAPA")
+mostrar_registros("19", "CUERNAVACA")
+mostrar_registros("19", "CULIACAN")
+mostrar_registros("19", "ENSENADA")
+mostrar_registros("19", "FRANCISCO I. MADERO")
+mostrar_registros("19", "GOMEZ PALACIO")
+mostrar_registros("19", "GUAYMAS")
+mostrar_registros("19", "GUERRERO")
+mostrar_registros("19", "HALACHO")
+mostrar_registros("19", "HEROICA CIUDAD DE HUAJUAPAN DE LEON")
+mostrar_registros("19", "HUETAMO")
+mostrar_registros("19", "JIUTEPEC")
+mostrar_registros("19", "LA HUACANA")
+mostrar_registros("19", "LA UNION DE ISIDORO M. DE OCA")
+mostrar_registros("19", "LEONARDO BRAVO")
+mostrar_registros("19", "MATAMOROS")
+mostrar_registros("19", "MEXICALI")
+mostrar_registros("19", "MIGUEL ALEMAN")
+mostrar_registros("19", "MOCORITO")
+mostrar_registros("19", "MORELIA")
+mostrar_registros("19", "NAVOLATO")
+mostrar_registros("19", "PERIBAN")
+mostrar_registros("19", "PUEBLO NUEVO")
+mostrar_registros("19", "REYNOSA")
+mostrar_registros("19", "RIO BRAVO")
+mostrar_registros("19", "SAN CARLOS YAUTEPEC")
+mostrar_registros("19", "SAN IGNACIO")
+mostrar_registros("19", "SAN JOSE DE GRACIA")
+mostrar_registros("19", "SAN LUIS AMATLAN")
+mostrar_registros("19", "SAN PEDRO LAGUNILLAS")
+mostrar_registros("19", "SAN PEDRO POCHUTLA")
+mostrar_registros("19", "SANALONA")
+mostrar_registros("19", "SANTA MARIA HUATULCO")
+mostrar_registros("19", "SANTA MARIA ZOQUITLIN")
+mostrar_registros("19", "SANTIAGO PAPASQUIARO")
+mostrar_registros("19", "SARIC")
+mostrar_registros("19", "SOMBRERETE")
+mostrar_registros("19", "SUCHIAPA")
+mostrar_registros("19", "TECATE")
+mostrar_registros("19", "TEJUPILCO")
+mostrar_registros("19", "TENANCINGO")
+mostrar_registros("19", "TIJUANA")
+mostrar_registros("19", "TLALIXTAQUILLA DE MALDONADO")
+mostrar_registros("19", "TUXTLA GUTIERREZ")
+mostrar_registros("19", "VILLA DE REYES")
+mostrar_registros("19", "ZINAPECUARO")
+```
+
+Para 46 de estas 52 denominaciones, la búsqueda en `00l` dentro de Nuevo León no arrojó ninguna coincidencia de frase completa. En los 6 casos restantes (`ALAMOS`, `ALTAMIRA`, `FRANCISCO I. MADERO`, `GUERRERO`, `PUEBLO NUEVO` y `SAN IGNACIO`), aunque el catálogo `00l` detecta coincidencias textuales en localidades rurales del estado, se decidió **no realizar la reasignación** bajo tres criterios metodológicos explícitos:
+
+1.  **Falta de unicidad municipal en `00l`:** A diferencia de los casos aceptados por inferencia en otras entidades (donde la localidad remitía a un único municipio), cinco de estos seis términos aparecen en `00l` asociados simultáneamente a dos o tres municipios distintos de Nuevo León (`ALAMOS` en Linares y Sabinas Hidalgo; `ALTAMIRA` en Montemorelos y Los Ramones; `FRANCISCO I. MADERO` en China y Doctor Coss; `PUEBLO NUEVO` en Cadereyta Jiménez y Montemorelos; `SAN IGNACIO` en Doctor Arroyo, Galeana y Montemorelos), por lo que cualquier asignación municipal sería arbitraria.
+2.  **Coincidencia parcial dentro de nombres compuestos:** En el caso de `GUERRERO` (único con un solo municipio candidato, Los Ramones) y `SAN IGNACIO`, la búsqueda en `00l` no corresponde a localidades con ese nombre exacto, sino a subcadenas contenidas en topónimos compuestos (`El Porvenir Guerrero`, `San Ignacio de Torres`, `San Ignacio de Texas`).
+3.  **Contexto de anomalía sistemática de captura en la entidad:** El hecho de que existan 93 nombres municipales registrados frente a solo 51 municipios en el MGI —y que de 53 discrepancias iniciales únicamente 1 correspondiera a Nuevo León (`GENERAL TREVINO`), dejando 52 nombres municipales exactos de otras entidades federativas (incluidos municipios vecinos de Tamaulipas y Coahuila como `REYNOSA`, `MATAMOROS`, `RIO BRAVO`, `MIGUEL ALEMAN`, `GOMEZ PALACIO`, además de conjuntos de Sinaloa, Michoacán, Guerrero y Oaxaca)— evidencia un error masivo de captura en el campo `CVE_ENT`. Dado que `ALAMOS`, `ALTAMIRA`, `FRANCISCO I. MADERO`, `GUERRERO`, `PUEBLO NUEVO` y `SAN IGNACIO` corresponden todos a nombres oficiales de municipios en otras entidades, su registro en Nuevo León obedece al mismo patrón de error de entidad y no a localidades rurales neoleonesas.
+
+**Nota sobre el error de captura:** los registros combinan el estado de Nuevo León con municipios que pertenecen a otras entidades federativas. Con la información disponible no es posible determinar cuál de los dos campos contiene el error: pudo haberse capturado erróneamente la entidad (`CVE_ENT = 19`) o el municipio. Por esta razón los registros no se reasignan a ningún otro estado ni municipio, y se excluyen de la base homologada para no atribuir incautaciones a una ubicación no verificada.
+
+## Estado: OAXACA (CVE_ENT 20)
+
+**Municipio registrado en DEFENSA:** `AGUASCALIENTES` $\rightarrow$ **Asignado a:** `SANTO DOMINGO TEHUANTEPEC` (`CVE_MUN 515`) — **Nivel de evidencia:** Baja.
+
+```{r}
+#| label: inf-20-aguascalientes
+#| echo: false
+mostrar_registros("20", "AGUASCALIENTES")
+```
+
+**Justificación:** La búsqueda en `00l` dentro de Oaxaca arroja una única coincidencia municipal para la localidad rural `Aguascalientes de Mazatán` (`CVE_LOC 0002`), perteneciente al municipio de `SANTO DOMINGO TEHUANTEPEC` (`CVE_MUN 515`), el cual además cuenta con otros registros de incautación en la entidad. Se clasifica como evidencia baja porque el término coincide como parte de un nombre compuesto y presenta homonimia con el estado y municipio de Aguascalientes (`CVE_ENT 01`).
+
+## Estado: QUINTANA ROO (CVE_ENT 23)
+
+**Municipio registrado en DEFENSA:** `CHETUMAL` $\rightarrow$ **Asignado a:** `OTHON P. BLANCO` (`CVE_MUN 004`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-23-chetumal
+#| echo: false
+mostrar_registros("23", "CHETUMAL")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una coincidencia exacta de *frase completa* para la localidad urbana `Chetumal` (`CVE_LOC 0001`), capital del estado y cabecera oficial del municipio de `OTHON P. BLANCO` (`CVE_MUN 004`).
+
+------------------------------------------------------------------------
+
+**Municipio registrado en DEFENSA:** `SOLIDARIDAD` $\rightarrow$ **Asignado a:** `PLAYA DEL CARMEN` (`CVE_MUN 008`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-23-solidaridad
+#| echo: false
+mostrar_registros("23", "SOLIDARIDAD")
+```
+
+**Justificación:** Corresponde al cambio de denominación oficial del municipio de Solidaridad (`CVE_MUN 008`) a `PLAYA DEL CARMEN` en el catálogo municipal vigente del Marco Geoestadístico (MGI 2025) del INEGI. Se trata de la misma entidad territorial y clave geoestadística (`23008`), manteniendo como cabecera urbana a `Playa del Carmen` (`CVE_LOC 0001`).
+
+
+## Estado: SINALOA (CVE_ENT 25)
+
+**Municipio registrado en DEFENSA:** `GUAMUCHIL` $\rightarrow$ **Asignado a:** `SALVADOR ALVARADO` (`CVE_MUN 015`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-25-guamuchil
+#| echo: false
+mostrar_registros("25", "GUAMUCHIL")
+```
+
+**Justificación:** Aunque el catálogo `00l` registra localidades menores con nombre similar en otros municipios (como una ranchería en Mazatlán, `CVE_MUN 012`, `CVE_LOC 0200`), `Guamúchil` (`CVE_LOC 0001`) es la **cabecera municipal** oficial del municipio de `SALVADOR ALVARADO` (`CVE_MUN 015`) y el principal centro urbano de la región del Évora, replicando el patrón recurrente de captura por nombre de cabecera municipal.
+
+## Estado: SONORA (CVE_ENT 26)
+
+**Municipio registrado en DEFENSA:** `SONOYTA` $\rightarrow$ **Asignado a:** `GENERAL PLUTARCO ELIAS CALLES` (`CVE_MUN 070`) — **Nivel de evidencia:** Fuerte.
+
+```{r}
+#| label: inf-26-sonoyta
+#| echo: false
+mostrar_registros("26", "SONOYTA")
+```
+
+**Justificación:** La búsqueda en `00l` arroja una única coincidencia exacta de *frase completa* para la localidad urbana `Sonoyta` (`CVE_LOC 0001`), cabecera oficial del municipio de `GENERAL PLUTARCO ELIAS CALLES` (`CVE_MUN 070`).
+
+
+## Estado: VERACRUZ DE IGNACIO DE LA LLAVE (CVE_ENT 30)
+
+**Municipio registrado en DEFENSA:** `CHINANTLA` $\rightarrow$ **Asignado a:** `SANTIAGO SOCHIAPAN` (`CVE_MUN 212`) — **Nivel de evidencia:** Baja.
+
+```{r}
+#| label: inf-30-chinantla
+#| echo: false
+mostrar_registros("30", "CHINANTLA")
+```
+
+**Justificación:** La búsqueda en `00l` dentro de Veracruz detecta una única coincidencia municipal para la localidad rural `San Gabriel de la Chinantla` (`CVE_LOC 0094`), perteneciente al municipio de `SANTIAGO SOCHIAPAN` (`CVE_MUN 212`), ubicado en la región del Papaloapan colindante con la región Chinanteca. Se clasifica como evidencia baja porque el término coincide solo como parte de un nombre compuesto y presenta homonimia con el municipio oficial de Chinantla en el estado de Puebla (`CVE_ENT 21`).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Registros con municipios duplicados dentro del estado pero con diferente CVE_MUN
+
+## Estado: OAXACA (CVE_ENT 20)
+
+```{r}
+#| label: hom-20-duplicados
+
+Datos_cocaina <- Datos_cocaina |>
+  mutate(
+    MUNICIPIO_INEGI = case_when(
+      CVE_ENT == "20" & MUNICIPIO_INEGI == "SAN JUAN MIXTEPEC"  ~ "SAN JUAN MIXTEPEC,DUPLICADO",
+      CVE_ENT == "20" & MUNICIPIO_INEGI == "SAN PEDRO MIXTEPEC" ~ "SAN PEDRO MIXTEPEC,DUPLICADO",
+      TRUE ~ MUNICIPIO_INEGI))
+```
+
+**Municipio registrado en DEFENSA:** `SAN PEDRO MIXTEPEC` $\rightarrow$ **Etiquetado en `MUNICIPIO_INEGI` como:** `SAN PEDRO MIXTEPEC,DUPLICADO` (`CVE_MUN 318` vs. `CVE_MUN 319`).
+
+```{r}
+#| label: dup-20-san-pedro-mixtepec
+#| echo: false
+mostrar_registros("20", "SAN PEDRO MIXTEPEC")
+```
+
+**Justificación:** En el Marco Geoestadístico (MGI) de Oaxaca existen dos municipios oficiales distintos con exactamente el mismo nombre (`SAN PEDRO MIXTEPEC`): el correspondiente a `CVE_MUN 318` (Distrito 22, Juquila) y el correspondiente a `CVE_MUN 319` (Distrito 26, Miahuatlán) —situación análoga a `SAN JUAN MIXTEPEC` (`CVE_MUN 208` y `209`), sin registros en la base—. Dado que los datos de DEFENSA no incluyen localidad ni distrito, es imposible asignar determinísticamente estos 7 registros a una clave municipal única y realizar un cruce directo por nombre provocaría un producto cartesiano que duplicaría los volúmenes incautados. Se añade el sufijo `,DUPLICADO` en `MUNICIPIO_INEGI` para que queden excluidos al filtrar las coincidencias válidas con el catálogo del INEGI.
